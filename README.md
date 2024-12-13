@@ -1,5 +1,5 @@
 ### About
-`Arachnid` is a simple file server meant for testing purposes; either publishes
+`Arachnid` is a simple file server meant for testing purposes; it either publishes
 a local directory or redirects to a remote fileserver.
 
 ### Integration
