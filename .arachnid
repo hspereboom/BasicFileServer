@@ -1,0 +1,15 @@
+## The local HTTP port to expose (defaults to 80)
+#
+#port=8888
+
+## A remote base URL for redirecting requests, if applicable
+#  - Ignored if 'root' is provided
+#
+#goto=http://<some-host>:<some-port>
+
+## The home directory to publish, if applicable
+#  - Either an absolute path, or one relative to the workdir
+#  - Supersedes 'goto' if both are provided
+#  - Triggers a dialog if neither is provided
+#
+#root=<some-directory>
