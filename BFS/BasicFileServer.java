@@ -26,6 +26,7 @@ package BFS;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -37,22 +38,20 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URI;
 import java.net.URLDecoder;
-import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
-import java.nio.file.attribute.BasicFileAttributes;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 import javax.swing.JFileChooser;
@@ -104,7 +103,7 @@ public final class BasicFileServer implements ThreadFactory, AutoCloseable {
 	private static synchronized Object pick(String $root, String $goto) {
 		if (absent($goto)) {
 			final File curr = new File(".");
-			final Path path;
+			final File path;
 
 			if (absent($root)) {
 				JFileChooser picker = new JFileChooser();
@@ -123,12 +122,12 @@ public final class BasicFileServer implements ThreadFactory, AutoCloseable {
 				}
 
 				path = (picker.showOpenDialog(null) == JFileChooser.APPROVE_OPTION ?
-					picker.getSelectedFile() : curr).toPath();
+					picker.getSelectedFile() : curr);
 			} else {
-				path = Paths.get($root.trim());
+				path = new File($root.trim());
 			}
 
-			return path.toAbsolutePath();
+			return path.getAbsoluteFile();
 		} else {
 			return URI.create($goto.trim());
 		}
@@ -143,7 +142,7 @@ public final class BasicFileServer implements ThreadFactory, AutoCloseable {
 		Properties tmp = new Properties();
 
 		try {
-			tmp.load(Files.newInputStream(Paths.get(ini)));
+			tmp.load(new FileInputStream(ini));
 		} catch (NoSuchFileException|FileNotFoundException e) {
 			tmp.load(app.getResource(ini).openStream());
 		}
@@ -157,7 +156,7 @@ public final class BasicFileServer implements ThreadFactory, AutoCloseable {
 			ini.getProperty("goto"));
 
 		ini.put(union != null ?
-			union instanceof Path ? "root" :
+			union instanceof File ? "root" :
 			union instanceof URI ? "goto" :
 			null : null, union);
 
@@ -208,7 +207,7 @@ public final class BasicFileServer implements ThreadFactory, AutoCloseable {
 
 	private static class Swim implements HttpMeta, Runnable {
 
-		private final Path home;
+		private final File home;
 		private final Socket socket;
 
 		private final List<String> request;
@@ -218,7 +217,7 @@ public final class BasicFileServer implements ThreadFactory, AutoCloseable {
 
 
 		private Swim(Properties config, Socket socket) {
-			this.home = (Path)config.get("root");
+			this.home = (File)config.get("root");
 			this.socket = socket;
 			this.request = new ArrayList<>();
 			this.response = new ArrayList<>();
@@ -242,10 +241,25 @@ public final class BasicFileServer implements ThreadFactory, AutoCloseable {
 
 			return !path.isEmpty() && (
 				path.charAt(0) == '/' ||
-				path.charAt(0) == '\\' ||
 				path.indexOf(':') >= 0 ||
-				path.indexOf("..") >= 0
+				path.indexOf("..") >= 0 ||
+				path.indexOf("//") >= 0 ||
+				path.indexOf('\\') >= 0
 			) ? null : path;
+		}
+
+		private static int branch(File path, String orig) {
+			return path == null ? 0
+				: path.isDirectory() ? 1
+				: path.isFile() ? 2 | (
+					orig.endsWith("/") ? 1 :
+					orig.endsWith(".gz") ? 4 :
+					orig.endsWith(".jgz") ? 4 : 0)
+				: 0;
+		}
+
+		private static Predicate<File> filterK(File base) {
+			return node -> base.isDirectory() || base.isFile();
 		}
 
 		private static synchronized void dump(Socket socket, List<String> bucket, String label) {
@@ -295,52 +309,57 @@ public final class BasicFileServer implements ThreadFactory, AutoCloseable {
 		}
 
 		private boolean process(OutputStream out) throws IOException {
-			final Path path = process(new BufferedWriter(new OutputStreamWriter(out)));
+			final Entry<File, Integer> job = process(new BufferedWriter(new OutputStreamWriter(out)));
+			final File pivot = job.getKey();
+			final int flags = job.getValue();
 
-			if (path == null) {
-			} else if (Files.isDirectory(path)) {
-				final BasicFileAttributes[] attrs = { null };
+			switch (flags) {
+				case 1: case 3: case 7: {
+					try (Stream<File> list = (flags & 2) != 0
+						? Stream.of(pivot).filter(filterK(pivot))
+						: Stream.concat(Stream.of(pivot), Stream.of(pivot.listFiles())).filter(filterK(pivot))
+					) {
+						File item;
+						Iterator<File> iter = list.iterator();
 
-				try (Stream<Path> list = Files.find(path, 1, (node, info) ->
-					path != node && (attrs[0] = info) != null && (info.isDirectory() || info.isRegularFile())
-				)) {
-					Path item;
-					Iterator<Path> iter = list.iterator();
+						while (iter.hasNext()) {
+							item = iter.next();
 
-					while (iter.hasNext()) {
-						item = iter.next();
+							Object file = pivot.equals(item) ? "." : item.getName();
+							Object time = ISO_INSTANT.format(Instant.ofEpochMilli(item.lastModified()));
+							Object size = item.isDirectory() ? "-" : item.length();
 
-						Object file = item.getFileName();
-						Object time = ISO_INSTANT.format(attrs[0].lastModifiedTime().toInstant());
-						Object size = attrs[0].isDirectory() ? "-" : attrs[0].size();
+							byte[] data = String
+								.format("%s\t%s\t%s\r\n\r\n", file, time, size)
+								.getBytes(UTF8);
+							byte[] meta = String
+								.format("%x\r\n", data.length - 2)
+								.getBytes();
 
-						byte[] data = String
-							.format("%s\t%s\t%s\r\n\r\n", file, time, size)
-							.getBytes(UTF8);
-						byte[] meta = String
-							.format("%x\r\n", data.length - 2)
-							.getBytes();
+							out.write(meta);
+							out.write(data);
+							out.flush();
+						}
 
-						out.write(meta);
-						out.write(data);
+						out.write(EMPTY_CHUNK);
 						out.flush();
 					}
+				}	break;
 
-					out.write(EMPTY_CHUNK);
-					out.flush();
-				}
-			} else {
-				try (InputStream in = Files.newInputStream(path, StandardOpenOption.READ)) {
-					copy(in, out);
-				}
+				case 2: case 6: {
+					try (InputStream in = new FileInputStream(pivot)) {
+						copy(in, out);
+					}
+				}	break;
 			}
 
 			return !response.isEmpty();
 		}
 
-		private Path process(BufferedWriter out) throws IOException {
-			Path pivot = null;
+		private Entry<File, Integer> process(BufferedWriter out) throws IOException {
+			File pivot = null;
 			URI hatch = null;
+			int flags = 0;
 
 			try {
 				if (redirect != null) {
@@ -359,27 +378,33 @@ public final class BasicFileServer implements ThreadFactory, AutoCloseable {
 							final Version resVer = Version.cast($entity.get(Entity.HTTP), Version.SPEC_1X);
 
 							if (reqUrl == null) {
+								pivot = null;
+								flags = 0;
+
 								response.clear();
 								append(response, STATUS_LINE.print(resVer, Status.CODE_402));
 							} else if (redirect == null) {
-								pivot = home.resolve(URLDecoder.decode(reqUrl, UTF8));
+								pivot = new File(home, URLDecoder.decode(reqUrl, UTF8));
+								flags = branch(pivot, reqUrl);
 
-								if (Files.isDirectory(pivot)) {
-									append(response, STATUS_LINE.print(resVer, Status.CODE_200));
-									append(response, TRANSFER_INFO.print(Transfer.ENCODING, "chunked"));
-								} else if (Files.isReadable(pivot)) {
-									append(response, STATUS_LINE.print(resVer, Status.CODE_200));
-									append(response, CONTENT_INFO.print(Content.LENGTH, Files.size(pivot)));
-
-									if (reqUrl.endsWith(".gz") || reqUrl.endsWith(".jgz")) {
+								switch (flags) {
+									case 1: case 3: case 7:
+										append(response, STATUS_LINE.print(resVer, Status.CODE_200));
+										append(response, CONTENT_INFO.print(Content.TYPE, "text/plain; charset=utf-8"));
+										append(response, TRANSFER_INFO.print(Transfer.ENCODING, "chunked"));
+										break;
+									case 6:
 										append(response, CONTENT_INFO.print(Content.ENCODING, "gzip"));
-									}
-								} else {
-									append(response, STATUS_LINE.print(resVer, Files.exists(pivot)
-										? Status.CODE_403
-										: Status.CODE_404));
-
-									pivot = null;
+									case 2:
+										append(response, STATUS_LINE.print(resVer, Status.CODE_200));
+										append(response, CONTENT_INFO.print(Content.LENGTH, pivot.length()));
+										break;
+									default:
+										flags = 0;
+										append(response, STATUS_LINE.print(resVer, pivot.exists()
+											? Status.CODE_403
+											: Status.CODE_404));
+										break;
 								}
 							} else {
 								hatch = redirect.resolve(reqUrl);
@@ -390,7 +415,7 @@ public final class BasicFileServer implements ThreadFactory, AutoCloseable {
 						}
 					}
 				}
-			} catch (IOException e) {
+			} catch (SecurityException e) {
 				response.clear();
 				append(response, STATUS_LINE.print(Version.SPEC_1X, Status.CODE_500));
 				pivot = null;
@@ -406,7 +431,7 @@ public final class BasicFileServer implements ThreadFactory, AutoCloseable {
 				out.flush();
 			}
 
-			return pivot;
+			return Map.entry(pivot, flags);
 		}
 
 		private boolean iterate() throws IOException {

@@ -49,9 +49,6 @@ public abstract class EnumLike {
 		try {
 			StackTraceElement[] cst = Thread.currentThread().getStackTrace();
 			Class<?> cls = Class.forName(cst[3].getClassName());
-//			Class<?> cls = Class.forName(ScreenHelper
-//				.who(ScreenHelper.ScanBeyond.EnquiringClass)
-//				.getClassName());
 
 			if (EnumLike.class.isAssignableFrom(cls)) {
 				return (Class<T>)cls;
@@ -86,6 +83,7 @@ public abstract class EnumLike {
 		return inst;
 	}
 
+	@SuppressWarnings("unlikely-arg-type")
 	private synchronized static <T extends EnumLike> T get(
 		Class<T> cls,
 		String text
@@ -107,7 +105,7 @@ public abstract class EnumLike {
 
 		try {
 			final Class<T> cls = let();
-			final T inst = cls.newInstance();
+			final T inst = cls.getDeclaredConstructor().newInstance();
 
 			EnumLike enu = inst;
 			enu.text = text;

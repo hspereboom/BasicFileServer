@@ -4,6 +4,7 @@ a local directory or redirects to a remote fileserver.
 
 ### Integration
 The main package (namespace) is `BFS`; please rebrand at will.
+There are no dependencies outside OOTB Java itself.
 
 ### Configuration
 The config file `.arachnid` should be available as a resource to the system CL,
